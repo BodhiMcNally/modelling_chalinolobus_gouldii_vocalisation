@@ -1,0 +1,352 @@
+---
+title: "STAT3926/STAT4026: Statistical Consulting"
+subtitle: "Enhancing Modelling Approaches for Analysing **Chalinolobus Gouldii** Vocalisation Behaviour"
+author:
+  - "Prepared by: 520432255, 500480816, 500573428"
+  - "Prepared for: Magic Mei-Ting Kao"
+title-block-banner: "#d85f33"
+date: "`r format(Sys.time(), '%d %B, %Y %H:%M')`"
+format: 
+  html: 
+    include-in-header:
+      - style/www/back-to-top.html
+      - style/www/progressbar.html
+    theme:
+      light: [united, style/custom_styles.scss]
+      dark: [darkly, style/custom_styles.scss]
+    embed-resources: true
+    code-fold: true
+    code-tools: false
+    includes:
+      in-header: style/www/header.html 
+    unsafe: true
+    smooth-scroll: true
+table-of-contents: true
+number-sections: false
+engine: knitr
+css: style/custom_styles.css
+---
+
+```{r setup, warning=FALSE, message=FALSE}
+#| code-summary: "Code: Setup"
+
+# Ensure Ubuntu font is downloaded and installed
+# Available from https://fonts.google.com/specimen/Ubuntu
+
+# load necessary packages
+library(tidyverse)        # For data manipulation and visualization
+library(ggplot2)          # For creating graphs, part of tidyverse but listed for clarity
+library(extrafont)        # For using custom fonts in plots
+library(readxl)           # For reading .xlsx files
+library(dplyr)            # For data manipulation and transformation, part of tidyverse
+library(openxlsx)         # For reading from and writing to .xlsx files
+library(lme4)             # For generalised linear mixed models
+library(glmmTMB)          # For generalised linear mixed models
+library(DHARMa)           # For model diagnostics
+```
+
+# Executive Summary
+
+::: justify
+
+The client seeks to affirm the suitability of the current statistical and modelling workflow for her data and research questions about *C. gouldii* vocalisation behaviour. The requirements include the development of a Generalised Linear Mixed Model (GLMM) capable of handling nested random effects. Our role was to develop and document a reproducible analysis framework that could form a part of her PhD thesis, complete with detailed explanations of all statistical methods and their implementations. Consistent with her initial approach, we confirmed that a Poisson GLMM is appropriate given the data structure that includes random effects such as different recording sites and dates. After implementing enhancements to her initial model to ensure robust, reliable, and reproducible results, we performed diagnostic tests to affirm the enhanced model's suitability. We recommend the client to continue her statistical and modelling workflow with our enhancements, providing a solid foundation for her ongoing PhD research. 
+
+:::
+
+# Client's Aims
+
+::: justify
+The client is conducting a PhD study focused on the vocalisation behavior of *Chalinolobus gouldii* (Gould's wattled bats) in their natural habitats, specifically at roosts and foraging sites.
+
+The client has articulated one explicit research question she would like assistance in answering:
+
+- What factors affect *C. gouldii* general activity and social call activity at foraging sites?
+
+The client would like us to verify her current statistical and modeling workflow to ensure it is appropriate for her data and research questions. She also requires assistance in the development of Generalised Linear Mixed Models (GLMM) that can handle nested random effects. We will develop and document a reproducible analysis framework that can be presented as part of her PhD thesis, including detailed explanations of all statistical methods and their implementations.
+:::
+
+# Data
+
+```{r load-data, message=FALSE, warning=FALSE}
+#| code-summary: "Code: Load Data"
+
+data =  read_excel("20240323_ABS_analysis_balance_possible_stats.xlsx", sheet = "activity_per_day")
+```
+
+```{r prep-data, message=FALSE, warning=FALSE}
+#| code-summary: "Code: Data Preprocessing"
+
+data$CHGO_SC_occurrence_conspecific = data$CHGO_SC_numberFile / data$CHGO_activity_files
+data$CHGO_SC_occurrence_allspecies = data$CHGO_SC_numberFile / data$overall_activity
+
+# remove 'barelandscape' column as it contains no data
+data = subset(data, select = -barelandscape)
+
+# set date column as POSIX
+data = data |>
+  mutate(date = as.Date(date, format = "%Y-%m-%d"))
+
+```
+
+We will explore one modelling workflow for the general activity aspect of the client's research question. The same workflow can be applied for social call activity.
+
+# General Activity Model
+
+## Modelling Workflow
+
+```{r corr, warning = FALSE}
+#| code-summary: "Code: Calculate Correlation Matrix"
+
+# calculate Spearman correlation matrix
+cor_data = data[, 13:21]
+cor_matrix = cor(cor_data, method = "spearman")
+```
+
+```{r corr-heat-map, fig.cap = "Figure 1: Correlation Heatmap of Selected Variables for Modelling"}
+#| code-summary: "Code: Plotting"
+
+#convert the correlation matrix into a long format for ggplot
+cor_melted = reshape2::melt(cor_matrix)
+
+# plotting
+p = ggplot(cor_melted, aes(Var1, Var2, fill = value)) +
+  geom_tile(color = "white") + 
+  scale_fill_gradient2(low = "blue", high = "red", mid = "white", 
+                       midpoint = 0, limit = c(-1, 1), space = "Lab", 
+                       name="Spearman\nCorrelation") +
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 45, vjust = 1, hjust = 1, size = 11),
+        axis.text.y = element_text(size = 11),
+        axis.title = element_text(face = "bold", size = 12),
+        plot.title = element_text(face = "bold", size = 22, hjust = 0.5),
+        strip.text = element_text(size = 14, face = "bold"),
+        legend.position = "bottom",
+        legend.box.background = element_rect(colour = "black"),
+        text = element_text(family = "Ubuntu")) +
+  labs(title = "Correlation Matrix Heatmap", x = "", y = "")
+
+p
+```
+
+### Checking Distributions of Variables
+
+```{r distribution-check-plotting-function}
+#| code-summary: "Code: Plotting Function"
+
+# function to create a histogram with ggplot2
+plot_histogram = function(data, var_name, title) {
+  ggplot(data, aes_string(x = var_name)) +
+    geom_histogram(bins = 30, fill = "orange", color = "black") +
+    labs(title = paste("Distribution of", var_name), x = var_name, y = "Frequency") +
+    theme_minimal() +
+    theme(
+      axis.text.x = element_text(angle = 45, vjust = 1, hjust = 1, size = 11),
+      axis.text.y = element_text(size = 11),
+      axis.title = element_text(face = "bold", size = 12),
+      plot.title = element_text(face = "bold", size = 14, hjust = 0.5),
+      legend.position = "none",
+      text = element_text(family = "Ubuntu")
+    )
+}
+```
+
+::: panel-tabset
+```{r distribution-plots, warning=FALSE}
+#| results: asis
+
+# list of variables to plot
+variables = c("overall_activity", "CHGO_activity_files", "CHGO_SC_occurrence_conspecific", 
+               "CHGO_SC_occurrence_allspecies", "anthropogenic.things.A", "grassA", 
+               "bushA", "waterA", "tempMx", "rain")
+
+# initialise a variable to keep track of the figure number
+figure_number = 1
+
+# generate and print plots for each variable
+iwalk(variables, function(var_name, title) {
+    figure_number <<- figure_number + 1
+    cat('## ', title, '\n\n')
+    print(plot_histogram(data, var_name))
+    cat(paste0('<figcaption class="figure-caption">Figure ', figure_number, ': Distribution of ', var_name, '.</figcaption> <br>\n\n'))
+})
+```
+:::
+
+::: justify
+
+The target variable `overall_activity` exhibits a right-skewed distribution with a mean of 368.35 and a high degree of variability, as indicated by a standard deviation of 337.30. This skewness is mirrored in the `CHGO_activity_files,` which also shows a highly right-skewed distribution with most data points clustered at lower values and a few extreme values, suggesting sporadic higher levels of activity.The variables `CHGO_SC_occurrence_conspecific`, `CHGO_SC_occurrence_allspecies` and `anthropogenic.things.A` show highly skewed distributions with most values clustered around zero. Vegetation coverage, represented by `grassA`, `waterA` and `bushA`, displays diverse distributions.The maximum temperature `tempMx` is right-skewed and ranges from 18.6°C to 35.7°C, while precipitation `rain` is also zero-inflated.
+
+:::
+
+### Data Filtering
+
+```{r key-periods}
+#| code-summary: "Code: Filtering for Key Reproductive Periods"
+
+# define the key reproductive periods of interest
+key_periods = c('pregnent', 'breeding', 'mating') # typo for 'pregnant' 
+
+# extract rows from the dataset where the 'season_reproductive' is one of the key periods
+# and exclude 'hibernation' at Brownlow Hill due to missing data
+data = subset(data, season_reproductive %in% key_periods)
+```
+
+::: justify
+
+The variable `key_periods` is defined as a vector containing the strings `pregnent` (note the spelling error in the original raw data imput), `breeding`, and `mating`. These represent the reproductive periods the client is interested in analysing. We recommend to exclude other periods like `hibernation`, due to issues such as missing data at specific locations like Brownlow Hill.
+
+:::
+
+### Modelling
+
+::: justify
+
+After initial data preparation and EDA, we suspect a Generalised Linear Mixed Model (GLMM) is appropriate since the data structure includes random effects like different recording sites and dates. This model accounts for non-independence in data due to these hierarchical grouping structures. We must also choose an appropriate distribution family. Since we are modelling `overall_activity` which is count data, a Poisson or Negative Binomial model should be fitted. To determine which we must first check for overdispersion (when the variance exceeds the mean). To do this, we will start by fitting a preliminary GLMM with a Poisson distribution. 
+
+We have also chosen to nest dates within locations because it accounts for the non-independence of observations collected from the same location on different dates. Without this consideration, the model could underestimate the standard errors associated with the fixed effects, potentially leading to biased inferences.
+
+:::
+
+```{r preliminary-poisson-glmm, results='asis', warning=FALSE}
+#| code-summary: "Code: Poisson GLMM"
+
+# fit a preliminary model
+preliminary_model = glmer(overall_activity ~ season_reproductive + tempMx + rain +
+                               waterA + anthropogenic.things.A + 
+                               (1 | Location) + (1 | Location:date),
+                               family = poisson(link = log), data = data,
+                               control = glmerControl(optimizer = "bobyqa"))
+
+# calculate dispersion statistic
+resid_dev = sum(residuals(preliminary_model, type = "deviance")^2)
+df_resid = df.residual(preliminary_model)
+dispersion_statistic = resid_dev / df_resid
+
+# output check results and suggestions based on the dispersion statistic
+if (dispersion_statistic > 1.1) {  # threshold to suggest overdispersion
+  cat("The dispersion statistic is", round(dispersion_statistic, 3) , "which indicates significant overdispersion.\n")
+  cat("It is advisable to consider a Negative Binomial model due to the overdispersion observed in the data.\n")
+} else {
+  cat("The dispersion statistic is", round(dispersion_statistic, 3), "which suggests that overdispersion is not significant.\n")
+  cat("A Poisson model may be appropriate for this data.\n")
+}
+
+overall_activity_GLMM = preliminary_model # reassign model in case this is the final one
+```
+
+#### Assess Model Fit
+
+::: justify
+
+Since a Poisson model is appropriate we will now assess model fit. We can use the `DHARMa` package to create simulated residuals from the preliminary Poisson GLMM model. This simulation-based approach allows for visualisation and assessment of the residuals, which are crucial for diagnosing potential issues in the model such as non-linearity and heteroscedasticity.
+
+:::
+
+```{r residual-analysis, fig.cap = "Figure 12: Diagnostic Plots"}
+#| code-summary: "Code: Residuals Analysis"
+
+# create simulated residuals
+simulationOutput = simulateResiduals(fittedModel = preliminary_model, n = 250)
+
+# plot the residuals for visual inspection
+plot(simulationOutput)
+```
+
+::: justify
+
+The p-value from the Kolmogorov-Smirnov (KS) test is 0.156, indicating that there is no significant deviation from the expected distribution. This result suggests that the residuals of our model conform reasonably well to the expected normal distribution, supporting the assumption that the errors are randomly distributed and that the model captures the underlying data structure effectively.
+
+The dispersion test result of p = 0.216 reconfirms that there is no significant overdispersion or underdispersion in the model.
+
+Likewise, outliers can significantly impact the fit and predictive power of a model. The p-value of 0.9 from the outlier test suggests that there are no significant outliers in the data that would adversely affect the model's performance. 
+
+Visual inspect of the residuals vs. predicted values plot revealed no significant problems, indicating a random dispersion of residuals across predictions. 
+
+Considering the high frequency of zeros in our dataset, we should also evaluate the model for zero inflation. To address this, we will perform a zero-inflation test using the `DHARMa` package, which simulates residuals from the fitted model and tests if the observed proportion of zeros is greater than expected.
+
+:::
+
+```{r zero-inflation-test, fig.cap = "Zero-Inflation Test Plot"}
+#| code-summary: "Code: Test for Zero Inflation"
+
+# print(zero_inflation_results)
+```
+
+::: justify
+
+The zero-inflation test performed yielded a ratio of observed to simulated zeros of 0, with a p-value of 0.97, strongly indicating that the observed zeros in our dataset are well-explained by the current Poisson GLMM without the need for additional zero-inflation components.
+
+The collective findings from these diagnostic tests provide strong evidence that our preliminary model is well-specified for our data.
+
+:::
+
+### Visualisations
+
+```{r plotting-fixed-effects, fig.cap = "Figure 13: Influence of environmental and reproductive factors on overall activity. Asterisks indicate levels of statistical significance, highlighting key factors that significantly affect activity levels."}
+#| code-summary: "Code: Plotting Fixed Effects"
+
+p = sjPlot::plot_model(overall_activity_GLMM, show.values = TRUE, value.offset = .4) +
+  theme_minimal() +
+  theme(
+    axis.text.x = element_text(angle = 45, vjust = 1, hjust = 1, size = 11),
+    axis.text.y = element_text(size = 11),
+    axis.title = element_text(face = "bold", size = 12),
+    plot.title = element_text(face = "bold", size = 14, hjust = 0.5),
+    legend.position = "none",
+    text = element_text(family = "Ubuntu")
+  ) +
+  labs(title = "Fixed Effects Plot", x = "Environmental and Reproductive Factors", y = "Incident Rate Ratios")
+
+p
+```
+
+::: justify
+
+During the mating season, activity decreases significantly to 67% of its typical level, a change that is statistically significant (p < 0.05). A similar pattern is observed during the pregnant season, where activity levels drop to 65% of their usual rates, also showing statistical significance. Temperature, however, exhibits a contrasting effect; for each unit increase in temperature, there is a 9% increase in activity, with this effect being highly significant (p < 0.01), indicating a strong positive relationship between temperature and activity. Rain and water area percentages slightly reduce activity to 95% and 99%, respectively, but these changes are not statistically significant, suggesting that these factors might not have a strong direct influence on activity under the conditions studied. In contrast, increases in anthropogenic features lead to a significant reduction in activity to 73% of the normal levels (p < 0.05).
+
+:::
+
+```{r plotting-random-effects, fig.cap = "Figure 14: Variation in Activity Levels Across Locations: This plot shows the random effects of different locations on overall activity, modelled in a GLMM. Each bar represents the deviation in activity level from the global mean (set at 0) for that location. Positive values indicate higher-than-average activity, while values less than one  suggest lower-than-average activity."}
+#| code-summary: "Code: Plotting Random Effects"
+
+# extract random effects
+re_data = ranef(overall_activity_GLMM, condVar = TRUE)
+
+# create a dataframe of random effects
+re_df = as.data.frame(re_data$Location)
+re_df$Location = rownames(re_df)
+re_df$std_error = sqrt(attr(re_data$Location, "postVar")[,,1])
+
+# plotting
+p = ggplot(re_df, aes(x = Location, y = `(Intercept)`)) +
+  geom_point() +
+  geom_errorbar(aes(ymin = `(Intercept)` - 1.96 * std_error, ymax = `(Intercept)` + 1.96 * std_error), width = 0.1) +
+  geom_text(aes(label = round(`(Intercept)`, 2)), nudge_x = 0.4, check_overlap = TRUE, hjust = 0.5) +
+  theme_minimal() +
+  theme(
+    axis.text.x = element_text(angle = 45, vjust = 1, hjust = 1, size = 11),
+    axis.text.y = element_text(size = 11),
+    axis.title = element_text(face = "bold", size = 12),
+    plot.title = element_text(face = "bold", size = 14, hjust = 0.5),
+    legend.position = "none",
+    text = element_text(family = "Ubuntu")
+  ) +
+  labs(title = "Random Effects Plot", x = "Location", y = "Effect Size (Intercept)") +
+  coord_flip()
+
+p
+```
+
+::: justify
+
+The random effects analysis of different locations on overall activity levels reveals notable variations across sites. `SOP_pier` demonstrates an activity level 21% higher than the global average, indicating an active area, whereas `SOP_mangrove` exhibits slightly reduced activity at 90% of the average. In contrast, `SOP_brickpit` sees an increase in activity, 34% above average. Conversely, `Mx_W` and `CTNP_duck` represent quieter environments, with activities at 62% and 22% of the average, respectively. `CTNP_bushy` and `CSF_w` also display lower activity levels, at 63% and 71% of the average, underscoring a less active setting. Notably, `BLH_w4` stands out with the highest activity spike at 62% above the average, marking it as an exceptionally active location. Similarly, `BLH_w2` and `BLH_w1` also exhibit substantially higher activity, 45% and 41% above average respectively, while `BLH_w3` remains slightly below the norm at 92%. 
+
+:::
+
+# Recommendations
+
+::: justify
+
+Having analysed the distributions of each covariate within the client's model, we confirm that the client's approach of a fitting a Poisson GLMM is appropriate for their research objectives. To validate the results of our first model, we also refit it (not included in this report) using the `brms` and `MCMCglmm` packages, achieving similar results. Therefore, we recommend that the client continue with their current modeling workflow, with our implemented enhancements, to ensure robust, reliable, and reproducible results. By including detailed diagnostics and model fit assessments, the client should have confidence in the the reliability of the model's outcomes and the inferences she can make from them. The workflow is not only reproducible, allowing for consistent application to similar datasets, but also adaptable for analysing various aspects of the client’s research, such as social call activity. This adaptability makes it a valuable tool for addressing novel points of interest that may arise throughout their PhD.
+
+:::
